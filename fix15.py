@@ -2,39 +2,28 @@ import celery
 import flask
 import csv
 
-class SalesforceId(object):
-    def __init__(self, idstr):
-        if len(idstr) == 15:
-            suffix = ''
-            for i in range(0, 3):
-                baseTwo = 0
-                for j in range (0, 5):
-                    character = idstr[i*5+j]
-                    if character >= 'A' and character <= 'Z':
-                        baseTwo += 1 << j
-                suffix += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ012345'[baseTwo]
-            self.id = idstr + suffix
-        elif len(idstr) == 18:
-             self.id = idstr
-        else:
-            raise ValueError('Salesforce Ids must be 15 or 18 characters.')
-   
-    def __eq__(self, other):
-        if isinstance(other, SalesforceId):
-            return self.id == other.id
-        elif isinstance(other, str):
-            return self.id == SalesforceId(other).id
-        
-        return False
-    
-    def __hash__(self):
-        return hash(self.id)
-   
-    def __str__(self):
-        return self.id
-    
-    def __repr__(self):
-        return 'Salesforce Id: ' + self.id
+def to18(idstr):
+    if len(idstr) == 15:
+        # To construct the 18 character Salesforce id, we're going to build a 15-bit checksum
+        # expressed as three alphanumeric characters.
+        # We do this by constructing 3 five-bit indices into the alnum character range
+        # Each five-bit index corresponds to the case (1 = uppercase) of five characters
+        # of the 15-digit Salesforce Id, in reverse order (LSB is the first character)
+
+        # Build up a bitstring
+        bitstring = 0
+        for i in range(0, 15):
+            if idstr[i] >= 'A' and idstr[i] <= 'Z':
+                bitstring |= 1 << i
+
+        # Take three slices of the bitstring and use them as 5-bit indices into the alnum sequence.
+        alnums = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ012345'
+        return idstr + alnums[bitstring & 0x1F] + alnums[bitstring>>5 & 0x1F] + alnums[bitstring>>10]
+    elif len(idstr) == 18:
+        return idstr
+    else:
+        raise ValueError('Salesforce Ids must be 15 or 18 characters.')
+
 
 def is_salesforce_id(string):
     return string.isalnum() and (len(string) == 18 or len(string) == 15)
@@ -72,7 +61,7 @@ def process_file(input_file, output_file, skip_headers = True, progress = None):
 
             if statuses[i]:
                 # Transform this value
-                row[i] = SalesforceId(value)
+                row[i] = to18(value)
 
         writer.writerow(row)
         bytes_written += sum([len(x) for x in row])
