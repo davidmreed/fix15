@@ -1,1 +1,14 @@
-simple-salesforce-0.74.2
+[[source]]
+verify_ssl = true
+url = "https://pypi.org/simple"
+name = "pypi"
+
+[requires]
+python_version = "3.5"
+
+[packages]
+flask = "*"
+"boto3" = "*"
+celery = "*"
+
+[dev-packages]
