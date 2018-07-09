@@ -6,6 +6,7 @@ setup(
     description='Convert 15-character Salesforce Ids to 18-character Ids in CSV files.',
     author='David Reed',
     author_email='david@ktema.org',
+    license='MIT License',
     packages=['fix15'],
     test_suite='nose.collector',
     tests_require=['nose'],
