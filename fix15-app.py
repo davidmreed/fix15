@@ -1,21 +1,24 @@
 import fix15
 import boto3
 import tempfile
+import json
 import os
+import uuid
 from flask import Flask, request, jsonify, render_template, session, url_for
 from celery import Celery
 
 app = Flask(__name__)
 app.config['CELERY_BROKER_URL'] = os.environ['REDIS_URL']
 app.config['CELERY_RESULT_BACKEND'] = os.environ['REDIS_URL']
-app.config['CELERY_TASK_SERIALIZER' = 'json'
+app.config['CELERY_TASK_SERIALIZER'] = 'json'
+app.config['BUCKET_NAME'] = os.environ['BUCKET_NAME']
 
 celery = Celery(app.name)
 celery.conf.update(app.config)
 
 @celery.task(bind=True)
-def process_s3_file(self, file_name):
-    bucket = boto3.resource('s3').Bucket(BUCKET_NAME)
+def process_s3_file(self, file_name, original_file_name):
+    bucket = boto3.resource('s3').Bucket(app.config['BUCKET_NAME'])
 
     # Pull down the input file from S3.
     # Input file name will have been uniqued to a GUID.
@@ -24,14 +27,24 @@ def process_s3_file(self, file_name):
     # Get the size of the downloaded file
     file_size = os.stat(file_name).ST_SIZE
 
+    # Generate a unique converted file name.
+    uniqued_name = uuid.uuid4() + '.csv'
+
     with tempfile.NamedTemporaryFile(encoding='utf-8') as output_file:
         with open(file_name, 'rb') as input_file:
             fix15.process_file(input_file, 
-                            output_file, 
-                            skip_headers=True, 
-                            progress=lambda bytes: self.update_state('PROGRESS', meta={ 'progress': bytes/file_size }))
+                               output_file, 
+                               skip_headers=True, 
+                               progress=lambda bytes: self.update_state('PROGRESS', meta={ 'progress': bytes/file_size }))
 
-        bucket.upload_file(output_file.name, output_file.name)
+        bucket.upload_file(output_file.name, 'outputs/' + uniqued_name)
+
+    self.update_state('SUCCESS', 
+                      meta={ 
+                          'result_url': 'https://%s.s3.amazonaws.com/outputs/%s' % (app.config['BUCKET_NAME'], uniqued_name),
+                          'download_name': os.path.splitext(original_file_name)[0] + '.fix15.csv'
+                      }
+                     )
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -39,19 +52,21 @@ def index():
 
 @app.route('/sign_s3/')
 def sign_s3():
-    S3_BUCKET = os.environ.get('S3_BUCKET')
+    S3_BUCKET = app.config['BUCKET_NAME']
 
     file_name = request.args.get('file_name')
     file_type = request.args.get('file_type')
+
+    uniqued_name = uuid.uuid4() + '.csv'
 
     s3 = boto3.client('s3')
 
     presigned_post = s3.generate_presigned_post(
         Bucket = S3_BUCKET,
-        Key = file_name,
-        Fields = {"acl": "public-read", "Content-Type": file_type},
+        Key = uniqued_name,
+        Fields = {"acl": "private", "Content-Type": 'text/csv'},
         Conditions = [
-            {"acl": "public-read"}, # FIXME: is this correct?
+            {"acl": "private"},
             {"Content-Type": file_type}
         ],
         ExpiresIn = 3600
@@ -59,7 +74,8 @@ def sign_s3():
 
     return json.dumps({
         'data': presigned_post,
-        'url': 'https://%s.s3.amazonaws.com/%s' % (S3_BUCKET, file_name)
+        'filename': uniqued_name,
+        'url': 'https://%s.s3.amazonaws.com/inputs/%s' % (S3_BUCKET, uniqued_name)
     })
 
 
@@ -67,7 +83,7 @@ def sign_s3():
 def process():
     task = process_s3_file.apply_async()
 
-    return jsonify({}), 202, {'Location': flask.url_for('get_progress', task_id=task.id)}
+    return jsonify({}), 202, {'Location': Flask.url_for('get_progress', task_id=task.id)}
 
 @app.route('/status/<task_id>')
 def get_progress(task_id):
@@ -87,8 +103,9 @@ def get_progress(task_id):
     elif task.state == 'SUCCESS':
         response = {
             'progress': 100,
-            'status': 'Done'
-            # Include the link to S3 here.
+            'status': 'Done',
+            'result_url': task.info.get('result_url'),
+            'download_name': task.info.get('download_name')
         }
     elif task.state == 'FAILURE':
         # something went wrong in the background job
